@@ -8,13 +8,15 @@ import (
 	"github.com/googollee/go-engine.io/polling"
 	"github.com/googollee/go-engine.io/websocket"
 	"net/http"
-	"strconv"
+  "strconv"
+	"sync/atomic"
 	"time"
 )
 
 type config struct {
 	PingTimeout   time.Duration
 	PingInterval  time.Duration
+	MaxConnection int
 	AllowRequest  func(*http.Request) error
 	AllowUpgrades bool
 	AccessControl func(*http.Request) (orign string, credentials string, methods string, headers string, maxAge int)
@@ -49,6 +51,7 @@ func NewServer(transports []string) (*Server, error) {
 		config: config{
 			PingTimeout:   60000 * time.Millisecond,
 			PingInterval:  25000 * time.Millisecond,
+			MaxConnection: 1000,
 			AllowRequest:  func(*http.Request) error { return nil },
 			AllowUpgrades: true,
 			AccessControl: func(*http.Request) (orign string, credentials string, methods string, headers string, maxAge int) {
@@ -70,6 +73,11 @@ func (s *Server) SetPingTimeout(t time.Duration) {
 // SetPingInterval sets the interval of ping. Default is 25s.
 func (s *Server) SetPingInterval(t time.Duration) {
 	s.config.PingInterval = t
+}
+
+// SetMaxConnection sets the max connetion. Default is 1000.
+func (s *Server) SetMaxConnection(n int) {
+	s.config.MaxConnection = n
 }
 
 // SetAllowRequest sets the middleware function when establish connection. If it return non-nil, connection won't be established. Default will allow all request.
@@ -110,6 +118,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		n := atomic.AddInt32(&s.currentConnection, 1)
+		if int(n) > s.config.MaxConnection {
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
+		}
+
 		sid = s.newId(r)
 		var err error
 		conn, err = newServerConn(sid, w, r, s)
@@ -148,6 +161,7 @@ func (s *Server) transports() transportCreaters {
 
 func (s *Server) onClose(id string) {
 	s.serverSessions.Remove(id)
+	atomic.AddInt32(&s.currentConnection, -1)
 }
 
 func (s *Server) setAccessControlHeaders(w http.ResponseWriter, r *http.Request, f func(*http.Request) (orign string, credentials string, methods string, headers string, maxAge int)) {
